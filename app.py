@@ -12,7 +12,6 @@ from dateutil import parser as dateparser
 DB_FOLDER = "data"
 DB_FILE = os.path.join(DB_FOLDER, "lotofacil.db")
 OUTPUT_FOLDER = "outputs"
-EXCEL_PATH = r"C:\Lotofacil\Lotofacil-(2).xlsx"
 EXCEL_SHEET_NAME = "LOTOFÁCIL"
 PRIMES = [2, 3, 5, 7, 11, 13, 17, 19, 23]
 
@@ -136,21 +135,22 @@ def fetch_ultimo_concurso():
         return dict(zip(cols, row))
     return None
 
-def importar_xlsx_lotofacil(caminho_xlsx, sheet_name="LOTOFÁCIL"):
-    if not os.path.exists(caminho_xlsx):
-        st.error(f"Arquivo Excel não encontrado em: {caminho_xlsx}")
-        return 0, 0
+def importar_xlsx_lotofacil(arquivo_xlsx, sheet_name="LOTOFÁCIL"):
+    """
+    Lê o XLSX (aba LOTOFÁCIL) e insere no SQLite.
+    Aceita caminho de arquivo (str) OU arquivo enviado pelo usuário (st.file_uploader).
+    """
+    import io
     try:
-        df = pd.read_excel(caminho_xlsx, sheet_name=sheet_name, engine="openpyxl")
+        if hasattr(arquivo_xlsx, "read"):  # arquivo enviado pelo usuário no app
+            df = pd.read_excel(io.BytesIO(arquivo_xlsx.read()), sheet_name=sheet_name, engine="openpyxl")
+        else:  # caminho de arquivo local
+            if not os.path.exists(arquivo_xlsx):
+                st.error(f"Arquivo Excel não encontrado em: {arquivo_xlsx}")
+                return 0, 0
+            df = pd.read_excel(arquivo_xlsx, sheet_name=sheet_name, engine="openpyxl")
     except Exception as e:
         st.error(f"Erro ao ler o arquivo Excel ou aba '{sheet_name}': {e}")
-        return 0, 0
-
-    df.columns = [str(c).strip() for c in df.columns]
-    required_cols = ["Concurso", "Data Sorteio"] + [f"Bola{i}" for i in range(1, 16)]
-    faltando = [c for c in required_cols if c not in df.columns]
-    if faltando:
-        st.error(f"Colunas obrigatórias não encontradas no Excel: {', '.join(faltando)}")
         return 0, 0
 
     df_filtered = df[required_cols].copy()
@@ -482,11 +482,14 @@ with tab1:
 
     st.divider()
     st.subheader("Importar Concursos do Excel")
-    st.info(f"O sistema tentará importar do arquivo: `{EXCEL_PATH}` na aba `{EXCEL_SHEET_NAME}`.")
-    st.warning("Certifique-se de que o arquivo Excel está fechado antes de importar.")
-    if st.button("Importar XLSX para o banco"):
-        with st.spinner("Importando dados do Excel..."):
-            inseridos, duplicados = importar_xlsx_lotofacil(EXCEL_PATH, EXCEL_SHEET_NAME)
+    arquivo_excel = st.file_uploader("Selecione o arquivo Excel (.xlsx) com os concursos", type=["xlsx"])
+    st.info(f"A aba esperada no Excel é `{EXCEL_SHEET_NAME}` (colunas: Concurso, Data Sorteio, Bola1..Bola15).")
+    if st.button("Importar XLSX para o banco", disabled=arquivo_excel is None):
+        if arquivo_excel is None:
+            st.warning("Selecione o arquivo Excel primeiro.")
+        else:
+            with st.spinner("Importando dados do Excel..."):
+                inseridos, duplicados = importar_xlsx_lotofacil(arquivo_excel, EXCEL_SHEET_NAME)
             if inseridos > 0 or duplicados > 0:
                 st.success(f"Importação concluída. Inseridos: {inseridos} | Duplicados ignorados: {duplicados}")
             else:
