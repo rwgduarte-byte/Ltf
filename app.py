@@ -150,4 +150,4 @@ def importar_xlsx_lotofacil(arquivo_xlsx, sheet_name="LOTOFÁCIL"):
                 return 0, 0
             df = pd.read_excel(arquivo_xlsx, sheet_name=sheet_name, engine="openpyxl")
     except Exception as e:
-        st.error(f"Erro ao ler o arquivo Excel ou aba
+        st.error(f"Erro ao ler o arquivo Excel ou aba "{sheet_name}": {e}")
