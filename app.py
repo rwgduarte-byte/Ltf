@@ -561,9 +561,9 @@ with tab2:
     else:
         usar_freq = st.checkbox("Usar frequência histórica (dezenas mais sorteadas têm mais peso)", value=True)
         min_robustez = st.slider(
-            "Robustez mínima: % de concursos (últimos 20) em que o jogo faria 11+ pontos",
+            "Robustez mínima: % de concursos (últimos 10) em que o jogo faria 11+ pontos",
             0, 100, 30, 5,
-            help="Só aceita jogos que teriam premiado (11+) em pelo menos esse % dos últimos 20 concursos."
+            help="Só aceita jogos que teriam premiado (11+) em pelo menos esse % dos últimos 10 concursos."
         ) / 100.0
         st.caption(f"Base de robustez: últimos **{len(df_recentes_robustez)}** concursos.")
 
@@ -742,7 +742,7 @@ with tab4:
             st.dataframe(menos.reset_index(drop=True), use_container_width=True)
 
         st.divider()
-        st.subheader("Tendência Recente (últimos 20 concursos)")
+        st.subheader("Tendência Recente (últimos 10 concursos)")
         df_recentes = df_concursos.sort_values("concurso", ascending=False).head(10)
         df_freq_recente = get_dezenas_df(df_recentes)
         st.bar_chart(df_freq_recente.set_index("Dezena"), height=300)
