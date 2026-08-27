@@ -5,7 +5,6 @@ import os
 import random
 from datetime import datetime, date
 from dateutil import parser as dateparser
-
 # =========================
 # Configurações e Constantes
 # =========================
@@ -14,7 +13,6 @@ DB_FILE = os.path.join(DB_FOLDER, "lotofacil.db")
 OUTPUT_FOLDER = "outputs"
 EXCEL_SHEET_NAME = "LOTOFÁCIL"
 PRIMES = [2, 3, 5, 7, 11, 13, 17, 19, 23]
-
 # =========================
 # Funções de Utilitário
 # =========================
@@ -39,6 +37,90 @@ def create_table():
     """)
     conn.commit()
     conn.close()
+
+def create_jogos_table():
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS jogos_gerados (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        concurso_alvo INTEGER,
+        data_geracao TEXT NOT NULL,
+        d1 INTEGER, d2 INTEGER, d3 INTEGER, d4 INTEGER, d5 INTEGER,
+        d6 INTEGER, d7 INTEGER, d8 INTEGER, d9 INTEGER, d10 INTEGER,
+        d11 INTEGER, d12 INTEGER, d13 INTEGER, d14 INTEGER, d15 INTEGER,
+        pontos INTEGER,
+        conferido INTEGER DEFAULT 0
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+def salvar_jogos_gerados(jogos, concurso_alvo=None):
+    conn = get_conn()
+    cursor = conn.cursor()
+    data_geracao = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for jogo in jogos:
+        cursor.execute(
+            "INSERT INTO jogos_gerados (concurso_alvo, data_geracao, d1,d2,d3,d4,d5,d6,d7,d8,d9,d10,d11,d12,d13,d14,d15, conferido) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)",
+            (concurso_alvo, data_geracao, *jogo)
+        )
+    conn.commit()
+    conn.close()
+
+def conferir_jogos_pendentes(resultado_concurso, dezenas_resultado):
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM jogos_gerados WHERE conferido = 0")
+    jogos = cursor.fetchall()
+    atualizados = 0
+    for jogo in jogos:
+        jogo_id = jogo[0]
+        dezenas_jogo = [jogo[i] for i in range(3, 18)]
+        pontos = len(set(dezenas_jogo) & set(dezenas_resultado))
+        cursor.execute("UPDATE jogos_gerados SET pontos=?, conferido=1, concurso_alvo=? WHERE id=?", (pontos, resultado_concurso, jogo_id))
+        atualizados += 1
+    conn.commit()
+    conn.close()
+    return atualizados
+
+def get_aprendizado_dezenas():
+    """Peso por dezena baseado no desempenho histórico dos jogos gerados (11+ pontos)."""
+    conn = get_conn()
+    try:
+        df = pd.read_sql_query("SELECT * FROM jogos_gerados WHERE conferido=1 AND pontos IS NOT NULL", conn)
+    except Exception:
+        df = pd.DataFrame()
+    conn.close()
+    if df.empty:
+        return None
+    peso = {d: 0 for d in range(1, 26)}
+    for _, row in df.iterrows():
+        if row["pontos"] >= 11:
+            for i in range(1, 16):
+                peso[int(row[f"d{i}"])] += 1
+    return peso
+
+def calcular_ajuste_filtros():
+    """Retorna ajuste de filtros baseado no desempenho dos últimos 16 palpites conferidos."""
+    conn = get_conn()
+    try:
+        df = pd.read_sql_query(
+            "SELECT pontos FROM jogos_gerados WHERE conferido=1 AND pontos IS NOT NULL ORDER BY id DESC LIMIT 16",
+            conn
+        )
+    except Exception:
+        df = pd.DataFrame()
+    conn.close()
+    if df.empty:
+        return {"robustez": 0, "atrasadas": 0, "rep_min": 0, "rep_max": 0}
+    media = df["pontos"].mean()
+    if media >= 11:
+        return {"robustez": 0, "atrasadas": 0, "rep_min": 0, "rep_max": 0}
+    elif media >= 9:
+        return {"robustez": -5, "atrasadas": -1, "rep_min": -1, "rep_max": 1}
+    else:
+        return {"robustez": -10, "atrasadas": -2, "rep_min": -2, "rep_max": 2}
 
 def iso_to_br(data_iso):
     if not data_iso:
@@ -152,11 +234,10 @@ def importar_xlsx_lotofacil(arquivo_xlsx, sheet_name="LOTOFÁCIL"):
     except Exception as e:
         st.error(f"Erro ao ler o arquivo Excel ou aba '{sheet_name}': {e}")
         return 0, 0
-
+    required_cols = ["Concurso", "Data Sorteio"] + [f"Bola{i}" for i in range(1, 16)]
     df_filtered = df[required_cols].copy()
     df_filtered["Concurso"] = pd.to_numeric(df_filtered["Concurso"], errors="coerce").astype("Int64")
     df_filtered = df_filtered.dropna(subset=["Concurso"])
-
     def parse_excel_date(val):
         if pd.isna(val):
             return None
@@ -169,15 +250,12 @@ def importar_xlsx_lotofacil(arquivo_xlsx, sheet_name="LOTOFÁCIL"):
                 return dateparser.parse(str(val).strip(), dayfirst=True).strftime("%Y-%m-%d")
             except Exception:
                 return None
-
     df_filtered["DataISO"] = df_filtered["Data Sorteio"].apply(parse_excel_date)
     df_filtered = df_filtered.dropna(subset=["DataISO"])
-
     bola_cols = [f"Bola{i}" for i in range(1, 16)]
     for col in bola_cols:
         df_filtered[col] = pd.to_numeric(df_filtered[col], errors="coerce").astype("Int64")
     df_filtered = df_filtered.dropna(subset=bola_cols)
-
     inseridos = 0
     duplicados = 0
     conn = get_conn()
@@ -284,12 +362,10 @@ def calcular_ciclos_fechados(df_concursos):
     concursos = df["concurso"].tolist()
     if not concursos:
         return [], None
-
     ciclos = []
     visto = set()
     inicio = concursos[0]
     ultimo_concurso = concursos[-1]
-
     for c in concursos:
         row = df[df["concurso"] == c].iloc[0]
         dezenas = set(int(row[f"d{i}"]) for i in range(1, 16))
@@ -306,7 +382,6 @@ def calcular_ciclos_fechados(df_concursos):
             })
             visto = set(dezenas)
             inicio = c
-
     faltantes = sorted(set(range(1, 26)) - visto)
     ciclo_atual = {
         "num_ciclo": len(ciclos) + 1,
@@ -353,7 +428,6 @@ def generate_unique_game_with_filters(existing_games, last_contest_dezenas, min_
             game = generate_weighted_random_game(freq)
         else:
             game = sorted(random.sample(range(1, 26), 15))
-
         if tuple(game) in existing_games:
             attempts += 1
             continue
@@ -443,13 +517,11 @@ def get_repeticao_series(df_concursos):
 # =========================
 st.set_page_config(layout="wide", page_title="Dashboard Lotofácil")
 st.title("🎲 Dashboard Lotofácil")
-
 setup_folders()
 create_table()
-
+create_jogos_table()
 if "caderno" not in st.session_state:
     st.session_state["caderno"] = []
-
 tab1, tab2, tab3, tab4 = st.tabs(["Cadastrar Concurso", "Gerar Jogos", "Editar Concurso", "Análise de Dados"])
 
 # =========================
@@ -477,9 +549,11 @@ with tab1:
                     if is_valid:
                         if insert_concurso(concurso_num, data_iso, dezenas_validadas):
                             st.success(f"Concurso {concurso_num} cadastrado com sucesso!")
+                            conferidos = conferir_jogos_pendentes(concurso_num, dezenas_validadas)
+                            if conferidos > 0:
+                                st.info(f"{conferidos} jogo(s) gerado(s) anteriormente conferidos contra o concurso {concurso_num}.")
                     else:
                         st.error(dezenas_validadas)
-
     st.divider()
     st.subheader("Importar Concursos do Excel")
     arquivo_excel = st.file_uploader("Selecione o arquivo Excel (.xlsx) com os concursos", type=["xlsx"])
@@ -492,9 +566,14 @@ with tab1:
                 inseridos, duplicados = importar_xlsx_lotofacil(arquivo_excel, EXCEL_SHEET_NAME)
             if inseridos > 0 or duplicados > 0:
                 st.success(f"Importação concluída. Inseridos: {inseridos} | Duplicados ignorados: {duplicados}")
+                ultimo_importado = fetch_ultimo_concurso()
+                if ultimo_importado:
+                    dezenas_ultimo = [ultimo_importado[f"d{i}"] for i in range(1, 16)]
+                    conferidos_imp = conferir_jogos_pendentes(ultimo_importado["concurso"], dezenas_ultimo)
+                    if conferidos_imp > 0:
+                        st.info(f"{conferidos_imp} jogo(s) gerado(s) anteriormente conferidos contra o concurso {ultimo_importado['concurso']}.")
             else:
                 st.info("Nenhum novo concurso foi inserido ou o arquivo não pôde ser lido.")
-
     st.divider()
     st.subheader("Últimos Concursos Cadastrados")
     all_concursos_df = fetch_all_concursos()
@@ -519,39 +598,39 @@ with tab2:
         st.write(f"Dezenas do último concurso: **{' '.join(f'{d:02d}' for d in last_contest_dezenas)}**")
     else:
         st.warning("Nenhum concurso cadastrado. Filtro de repetição não será aplicado.")
-
     df_concursos_tab2 = fetch_all_concursos()
     freq_historica = get_dezenas_freq(df_concursos_tab2) if not df_concursos_tab2.empty else None
-    df_recentes_robustez = df_concursos_tab2.sort_values("concurso", ascending=False).head(20) if not df_concursos_tab2.empty else None
-
+    aprendizado = get_aprendizado_dezenas()
+    if aprendizado and freq_historica:
+        for d in range(1, 26):
+            freq_historica[d] = freq_historica[d] + aprendizado[d] * 2
+    df_recentes_robustez = df_concursos_tab2.sort_values("concurso", ascending=False).head(10) if not df_concursos_tab2.empty else None
     ciclos_fechados, ciclo_atual = calcular_ciclos_fechados(df_concursos_tab2) if not df_concursos_tab2.empty else ([], None)
     faltantes_ciclo = set(ciclo_atual["faltantes"]) if ciclo_atual else None
     min_faltantes_ciclo = regra_faltantes_ciclo(ciclo_atual["num_faltantes"]) if ciclo_atual else 0
-
     st.subheader("Configurar Filtros")
+    ajuste = calcular_ajuste_filtros()
+    if any(v != 0 for v in ajuste.values()):
+        st.caption(f"🤖 Ajuste automático (média dos últimos palpites): robustez {ajuste['robustez']:+d} | atrasadas {ajuste['atrasadas']:+d} | repetições {ajuste['rep_min']:+d} a {ajuste['rep_max']:+d}")
     col_filters1, col_filters2, col_filters3 = st.columns(3)
-
     with col_filters1:
         st.markdown("#### Repetições do Último Concurso")
-        min_rep = st.slider("Mínimo de Repetições", 0, 15, 9 if last_contest else 0)
-        max_rep = st.slider("Máximo de Repetições", 0, 15, 10 if last_contest else 15)
+        min_rep = st.slider("Mínimo de Repetições", 0, 15, max(0, 9 + ajuste["rep_min"]) if last_contest else 0)
+        max_rep = st.slider("Máximo de Repetições", 0, 15, min(15, 10 + ajuste["rep_max"]) if last_contest else 15)
         if min_rep > max_rep:
             st.error("Mínimo de repetições não pode ser maior que o máximo.")
-
     with col_filters2:
         st.markdown("#### Dezenas Pares")
         min_pares = st.slider("Mínimo de Pares", 0, 15, 7)
         max_pares = st.slider("Máximo de Pares", 0, 15, 8)
         if min_pares > max_pares:
             st.error("Mínimo de pares não pode ser maior que o máximo.")
-
     with col_filters3:
         st.markdown("#### Dezenas Primas")
         min_primos = st.slider("Mínimo de Primos", 0, len(PRIMES), 4)
         max_primos = st.slider("Máximo de Primos", 0, len(PRIMES), 6)
         if min_primos > max_primos:
             st.error("Mínimo de primos não pode ser maior que o máximo.")
-
     st.divider()
     st.subheader("Frequência e Robustez (Tendência)")
     if df_concursos_tab2.empty:
@@ -561,12 +640,11 @@ with tab2:
     else:
         usar_freq = st.checkbox("Usar frequência histórica (dezenas mais sorteadas têm mais peso)", value=True)
         min_robustez = st.slider(
-            "Robustez mínima: % de concursos (últimos 20) em que o jogo faria 11+ pontos",
-            0, 100, 30, 5,
-            help="Só aceita jogos que teriam premiado (11+) em pelo menos esse % dos últimos 20 concursos."
+            "Robustez mínima: % de concursos (últimos 10) em que o jogo faria 11+ pontos",
+            0, 100, max(0, 30 + ajuste["robustez"]), 5,
+            help="Só aceita jogos que teriam premiado (11+) em pelo menos esse % dos últimos 10 concursos. Ajustado automaticamente conforme o desempenho dos palpites anteriores."
         ) / 100.0
         st.caption(f"Base de robustez: últimos **{len(df_recentes_robustez)}** concursos.")
-
     st.divider()
     st.subheader("Ciclo das Dezenas (Atraso)")
     if df_concursos_tab2.empty:
@@ -577,9 +655,8 @@ with tab2:
         min_atraso = st.slider("Atraso mínimo para considerar uma dezena 'atrasada'", 1, 15, 3)
         atrasadas_set = get_dezenas_atrasadas(df_concursos_tab2, min_atraso)
         st.write(f"Dezenas atrasadas (atraso ≥ {min_atraso}): **{' '.join(f'{d:02d}' for d in sorted(atrasadas_set))}**")
-        min_atrasadas = st.slider("Mínimo de dezenas atrasadas por jogo", 0, min(10, len(atrasadas_set)), 4)
+        min_atrasadas = st.slider("Mínimo de dezenas atrasadas por jogo", 0, min(10, len(atrasadas_set)), max(0, 4 + ajuste["atrasadas"]))
         st.caption(f"Total de dezenas atrasadas disponíveis: **{len(atrasadas_set)}**")
-
     st.divider()
     st.subheader("Ciclo Fechado das Dezenas")
     if ciclo_atual is None:
@@ -590,7 +667,6 @@ with tab2:
         st.write(f"Ciclo atual: **{ciclo_atual['num_ciclo']}** (iniciado no concurso **{ciclo_atual['inicio']}**)")
         st.write(f"Dezenas que ainda faltam no ciclo: **{' '.join(f'{d:02d}' for d in ciclo_atual['faltantes'])}**")
         st.write(f"Total faltando: **{ciclo_atual['num_faltantes']}**")
-
         if ciclo_atual["num_faltantes"] == 0:
             st.success("Ciclo fechado! Todas as 25 dezenas já apareceram. Um novo ciclo será iniciado no próximo sorteio.")
             faltantes_ciclo = None
@@ -599,18 +675,14 @@ with tab2:
             st.info(f"Faltam apenas **{ciclo_atual['num_faltantes']}** dezenas. Regra aplicada: **forçar as {ciclo_atual['num_faltantes']} faltantes em cada jogo**.")
         else:
             st.info(f"Faltam **{ciclo_atual['num_faltantes']}** dezenas. Regra aplicada: **metade ({min_faltantes_ciclo}) das faltantes por jogo**.")
-
         st.caption("Regra automática: faltam 1-3 → força todas | faltam 4+ → metade por jogo.")
-
     st.divider()
     st.subheader("Gerar Jogos")
     num_jogos_to_generate = st.radio("Quantos jogos deseja gerar?", (16, 32, 64, 128), horizontal=True)
-
     if st.button(f"Gerar {num_jogos_to_generate} Jogos"):
         generated_games = []
         existing_games_set = set()
         progress_bar = st.progress(0)
-
         for i in range(num_jogos_to_generate):
             game = generate_unique_game_with_filters(
                 existing_games_set,
@@ -633,9 +705,9 @@ with tab2:
                 st.warning(f"Não foi possível gerar todos os {num_jogos_to_generate} jogos com os filtros especificados. Tente reduzir a robustez, o mínimo de atrasadas ou o mínimo de faltantes do ciclo.")
                 break
             progress_bar.progress((i + 1) / num_jogos_to_generate)
-
         if generated_games:
             st.success(f"{len(generated_games)} jogos gerados com sucesso!")
+            salvar_jogos_gerados(generated_games, concurso_alvo=last_contest["concurso"] if last_contest else None)
             st.dataframe(pd.DataFrame(generated_games, columns=[f"D{i}" for i in range(1, 16)]))
             caderno_set = set(tuple(j) for j in st.session_state["caderno"])
             novos = 0
@@ -649,177 +721,10 @@ with tab2:
             export_games(generated_games)
         else:
             st.error("Nenhum jogo foi gerado. Verifique os filtros e se há concursos cadastrados.")
-
     st.divider()
     st.subheader("Caderno de Jogos")
     total_caderno = len(st.session_state["caderno"])
     st.write(f"Total de jogos no caderno: **{total_caderno}**")
-
     colA, colB = st.columns(2)
     with colA:
-        if st.button("Conferir Caderno (último sorteio)"):
-            ultimo = fetch_ultimo_concurso()
-            if not ultimo:
-                st.warning("Não há sorteios cadastrados para conferir. Cadastre ou importe o resultado primeiro.")
-            elif total_caderno == 0:
-                st.info("O caderno está vazio. Gere jogos primeiro.")
-            else:
-                resultado = [ultimo[f"d{i}"] for i in range(1, 16)]
-                st.write(f"Resultado usado: concurso **{ultimo['concurso']}** ({iso_to_br(ultimo['data'])}) — **{' '.join(f'{d:02d}' for d in resultado)}**")
-                df_premiados = conferir_caderno(st.session_state["caderno"], resultado, min_pontos=11)
-                if df_premiados.empty:
-                    st.warning("Nenhum jogo do caderno pontuou (11 a 15 pontos) com o último sorteio.")
-                else:
-                    resumo = df_premiados["Pontos"].value_counts().reindex([15, 14, 13, 12, 11], fill_value=0)
-                    st.write("Resumo (quantidade por pontuação):")
-                    st.write(resumo)
-                    st.dataframe(df_premiados, use_container_width=True)
-    with colB:
-        if st.button("Limpar Caderno"):
-            st.session_state["caderno"] = []
-            st.success("Caderno limpo.")
-
-# =========================
-# Aba 3: Editar Concurso
-# =========================
-with tab3:
-    st.header("Editar Concurso Existente")
-    all_concursos_df = fetch_all_concursos()
-    if all_concursos_df.empty:
-        st.info("Nenhum concurso cadastrado para editar.")
-    else:
-        concursos_list = all_concursos_df["concurso"].tolist()
-        selected_concurso_num = st.selectbox("Selecione o Concurso para Editar", sorted(concursos_list, reverse=True))
-        if selected_concurso_num:
-            concurso_data = fetch_concurso(selected_concurso_num)
-            if concurso_data:
-                with st.form("form_editar_concurso"):
-                    st.write(f"Editando Concurso **{selected_concurso_num}**")
-                    current_data_br = iso_to_br(concurso_data["data"])
-                    edited_data_br = st.text_input("Data do Sorteio (dd/mm/aaaa)", value=current_data_br)
-                    current_dezenas = [concurso_data[f"d{i}"] for i in range(1, 16)]
-                    edited_dezenas_str = st.text_input("Dezenas (separadas por espaço ou vírgula)", value=" ".join(f"{d:02d}" for d in current_dezenas))
-                    update_submitted = st.form_submit_button("Atualizar Concurso")
-                    if update_submitted:
-                        edited_data_iso = normalize_date_input(edited_data_br)
-                        if not edited_data_iso:
-                            st.error("Formato de data inválido. Use dd/mm/aaaa.")
-                        else:
-                            is_valid, dezenas_validadas = validate_dezenas(edited_dezenas_str.replace(",", " ").split())
-                            if is_valid:
-                                if update_concurso(selected_concurso_num, edited_data_iso, dezenas_validadas):
-                                    st.success(f"Concurso {selected_concurso_num} atualizado com sucesso!")
-                                else:
-                                    st.error("Falha ao atualizar concurso.")
-                            else:
-                                st.error(dezenas_validadas)
-            else:
-                st.error("Dados do concurso selecionado não encontrados.")
-
-# =========================
-# Aba 4: Análise de Dados
-# =========================
-with tab4:
-    st.header("📊 Análise de Dados dos Concursos")
-    df_concursos = fetch_all_concursos()
-    if df_concursos.empty:
-        st.info("Nenhum concurso cadastrado. Importe ou cadastre concursos para ver as análises.")
-    else:
-        st.caption(f"Analisando **{len(df_concursos)}** concursos cadastrados.")
-
-        st.subheader("Frequência de Cada Dezena (1 a 25)")
-        df_freq = get_dezenas_df(df_concursos)
-        st.bar_chart(df_freq.set_index("Dezena"), height=350)
-
-        col_rank1, col_rank2 = st.columns(2)
-        with col_rank1:
-            st.markdown("#### 🔥 Dezenas Mais Sorteadas")
-            mais = df_freq.sort_values("Frequência", ascending=False).head(20)
-            st.dataframe(mais.reset_index(drop=True), use_container_width=True)
-        with col_rank2:
-            st.markdown("#### ❄️ Dezenas Menos Sorteadas")
-            menos = df_freq.sort_values("Frequência", ascending=True).head(20)
-            st.dataframe(menos.reset_index(drop=True), use_container_width=True)
-
-        st.divider()
-        st.subheader("Tendência Recente (últimos 20 concursos)")
-        df_recentes = df_concursos.sort_values("concurso", ascending=False).head(20)
-        df_freq_recente = get_dezenas_df(df_recentes)
-        st.bar_chart(df_freq_recente.set_index("Dezena"), height=300)
-
-        col_hot, col_cold = st.columns(2)
-        with col_hot:
-            st.markdown("#### 🔥 Quentes (recentes)")
-            quentes = df_freq_recente.sort_values("Frequência", ascending=False).head(8)
-            st.dataframe(quentes.reset_index(drop=True), use_container_width=True)
-        with col_cold:
-            st.markdown("#### ❄️ Frias (recentes)")
-            frias = df_freq_recente.sort_values("Frequência", ascending=True).head(8)
-            st.dataframe(frias.reset_index(drop=True), use_container_width=True)
-
-        st.divider()
-        st.subheader("Ciclo das Dezenas (Atraso e Ciclo Médio)")
-        df_ciclo = get_atraso_e_ciclo(df_concursos)
-        st.bar_chart(df_ciclo.set_index("Dezena")[["Atraso"]], height=300)
-        st.caption("Atraso = há quantos concursos a dezena não aparece. Ciclo médio = intervalo médio entre aparições.")
-        st.dataframe(df_ciclo, use_container_width=True)
-
-        st.divider()
-        st.subheader("Ciclo Fechado das Dezenas")
-        ciclos, ciclo_atual_analise = calcular_ciclos_fechados(df_concursos)
-
-        if ciclo_atual_analise:
-            st.markdown("#### Ciclo Atual (Aberto)")
-            st.write(f"Ciclo **{ciclo_atual_analise['num_ciclo']}** — iniciado no concurso **{ciclo_atual_analise['inicio']}**")
-            if ciclo_atual_analise["num_faltantes"] > 0:
-                st.write(f"Dezenas que ainda faltam: **{' '.join(f'{d:02d}' for d in ciclo_atual_analise['faltantes'])}**")
-                st.write(f"Total faltando: **{ciclo_atual_analise['num_faltantes']}**")
-            else:
-                st.success("Ciclo fechado! Todas as 25 dezenas já apareceram.")
-
-        if ciclos:
-            st.markdown("#### Histórico de Ciclos Fechados")
-            df_ciclos = pd.DataFrame([{
-                "Ciclo": c["ciclo"],
-                "Início": c["inicio"],
-                "Fim": c["fim"],
-                "Duração (sorteios)": c["duracao"],
-                "Dezena(s) que fechou(ram)": " ".join(f"{d:02d}" for d in c["fechadoras"]),
-            } for c in ciclos])
-            st.dataframe(df_ciclos, use_container_width=True)
-
-            st.markdown("#### Frequência dos Ciclos")
-            duracoes = [c["duracao"] for c in ciclos]
-            st.write(f"Média de sorteios por ciclo: **{sum(duracoes)/len(duracoes):.1f}**")
-            st.write(f"Mínimo: **{min(duracoes)}** | Máximo: **{max(duracoes)}**")
-            st.caption(f"Total de ciclos fechados: **{len(ciclos)}**")
-
-            st.markdown("#### Dezenas que Mais Fecham Ciclos")
-            fechadoras_freq = {}
-            for c in ciclos:
-                for d in c["fechadoras"]:
-                    fechadoras_freq[d] = fechadoras_freq.get(d, 0) + 1
-            df_fechadoras = pd.DataFrame(
-                sorted(fechadoras_freq.items(), key=lambda x: x[1], reverse=True),
-                columns=["Dezena", "Vezes que fechou ciclo"]
-            )
-            st.dataframe(df_fechadoras, use_container_width=True)
-        else:
-            st.info("Nenhum ciclo fechado ainda. Continue cadastrando concursos.")
-
-        st.divider()
-        st.subheader("Evolução de Pares e Ímpares por Concurso")
-        df_pi = get_pares_impares_series(df_concursos)
-        st.line_chart(df_pi.set_index("concurso")[["Pares", "Ímpares"]], height=350)
-
-        st.divider()
-        st.subheader("Evolução da Soma das Dezenas por Concurso")
-        df_soma = get_soma_series(df_concursos)
-        st.line_chart(df_soma.set_index("concurso")[["Soma"]], height=350)
-        st.caption(f"Média da soma: **{df_soma['Soma'].mean():.1f}** | Mínima: **{df_soma['Soma'].min()}** | Máxima: **{df_soma['Soma'].max()}**")
-
-        st.divider()
-        st.subheader("Repetições entre Concursos Consecutivos")
-        df_rep = get_repeticao_series(df_concursos)
-        st.line_chart(df_rep.set_index("concurso")[["Repetições"]], height=350)
-        st.caption(f"Média de repetições entre concursos: **{df_rep['Repetições'].mean():.1f}**")
+        if st.button("Conferir Caderno
