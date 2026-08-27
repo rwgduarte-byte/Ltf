@@ -748,4 +748,4 @@ with tab2:
         if st.button("Limpar Caderno"):
             st.session_state["caderno"] = []
             st.success("Caderno limpo.")
-        if st.button("Conferir Caderno (último sorteio)"):
+       
