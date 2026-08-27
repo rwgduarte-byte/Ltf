@@ -561,9 +561,9 @@ with tab2:
     else:
         usar_freq = st.checkbox("Usar frequência histórica (dezenas mais sorteadas têm mais peso)", value=True)
         min_robustez = st.slider(
-            "Robustez mínima: % de concursos (últimos 15) em que o jogo faria 11+ pontos",
+            "Robustez mínima: % de concursos (últimos 20) em que o jogo faria 11+ pontos",
             0, 100, 30, 5,
-            help="Só aceita jogos que teriam premiado (11+) em pelo menos esse % dos últimos 15 concursos."
+            help="Só aceita jogos que teriam premiado (11+) em pelo menos esse % dos últimos 20 concursos."
         ) / 100.0
         st.caption(f"Base de robustez: últimos **{len(df_recentes_robustez)}** concursos.")
 
