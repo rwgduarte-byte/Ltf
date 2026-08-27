@@ -62,7 +62,7 @@ def salvar_jogos_gerados(jogos, concurso_alvo=None):
     data_geracao = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for jogo in jogos:
         cursor.execute(
-            "INSERT INTO jogos_gerados (concurso_alvo, data_geracao, d1,d2,d3,d4,d5,d6,d7,d8,d9,d10,d11,d12,d13,d14,d15, conferido) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)",
+            "INSERT INTO jogos_gerados (concurso_alvo, data_geracao, d1,d2,d3,d4,d5,d6,d7,d8,d9,d10,d11,d12,d13,d14,d15, conferido) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)",
             (concurso_alvo, data_geracao, *jogo)
         )
     conn.commit()
