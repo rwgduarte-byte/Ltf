@@ -722,9 +722,30 @@ with tab2:
         else:
             st.error("Nenhum jogo foi gerado. Verifique os filtros e se há concursos cadastrados.")
     st.divider()
-    st.subheader("Caderno de Jogos")
+       st.subheader("Caderno de Jogos")
     total_caderno = len(st.session_state["caderno"])
     st.write(f"Total de jogos no caderno: **{total_caderno}**")
     colA, colB = st.columns(2)
     with colA:
+        if st.button("Conferir Caderno (último sorteio)"):
+            ultimo = fetch_ultimo_concurso()
+            if not ultimo:
+                st.warning("Não há sorteios cadastrados para conferir. Cadastre ou importe o resultado primeiro.")
+            elif total_caderno == 0:
+                st.info("O caderno está vazio. Gere jogos primeiro.")
+            else:
+                resultado = [ultimo[f"d{i}"] for i in range(1, 16)]
+                st.write(f"Resultado usado: concurso **{ultimo['concurso']}** ({iso_to_br(ultimo['data'])}) — **{' '.join(f'{d:02d}' for d in resultado)}**")
+                df_premiados = conferir_caderno(st.session_state["caderno"], resultado, min_pontos=11)
+                if df_premiados.empty:
+                    st.warning("Nenhum jogo do caderno pontuou (11 a 15 pontos) com o último sorteio.")
+                else:
+                    resumo = df_premiados["Pontos"].value_counts().reindex([15, 14, 13, 12, 11], fill_value=0)
+                    st.write("Resumo (quantidade por pontuação):")
+                    st.write(resumo)
+                    st.dataframe(df_premiados, use_container_width=True)
+    with colB:
+        if st.button("Limpar Caderno"):
+            st.session_state["caderno"] = []
+            st.success("Caderno limpo.")
         if st.button("Conferir Caderno (último sorteio)"):
