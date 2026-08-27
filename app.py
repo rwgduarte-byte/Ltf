@@ -722,7 +722,7 @@ with tab2:
         else:
             st.error("Nenhum jogo foi gerado. Verifique os filtros e se há concursos cadastrados.")
     st.divider()
-       st.subheader("Caderno de Jogos")
+    st.subheader("Caderno de Jogos")
     total_caderno = len(st.session_state["caderno"])
     st.write(f"Total de jogos no caderno: **{total_caderno}**")
     colA, colB = st.columns(2)
