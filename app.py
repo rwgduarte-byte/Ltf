@@ -522,7 +522,7 @@ with tab2:
 
     df_concursos_tab2 = fetch_all_concursos()
     freq_historica = get_dezenas_freq(df_concursos_tab2) if not df_concursos_tab2.empty else None
-    df_recentes_robustez = df_concursos_tab2.sort_values("concurso", ascending=False).head(15) if not df_concursos_tab2.empty else None
+    df_recentes_robustez = df_concursos_tab2.sort_values("concurso", ascending=False).head(20) if not df_concursos_tab2.empty else None
 
     ciclos_fechados, ciclo_atual = calcular_ciclos_fechados(df_concursos_tab2) if not df_concursos_tab2.empty else ([], None)
     faltantes_ciclo = set(ciclo_atual["faltantes"]) if ciclo_atual else None
@@ -734,16 +734,16 @@ with tab4:
         col_rank1, col_rank2 = st.columns(2)
         with col_rank1:
             st.markdown("#### 🔥 Dezenas Mais Sorteadas")
-            mais = df_freq.sort_values("Frequência", ascending=False).head(15)
+            mais = df_freq.sort_values("Frequência", ascending=False).head(20)
             st.dataframe(mais.reset_index(drop=True), use_container_width=True)
         with col_rank2:
             st.markdown("#### ❄️ Dezenas Menos Sorteadas")
-            menos = df_freq.sort_values("Frequência", ascending=True).head(15)
+            menos = df_freq.sort_values("Frequência", ascending=True).head(20)
             st.dataframe(menos.reset_index(drop=True), use_container_width=True)
 
         st.divider()
-        st.subheader("Tendência Recente (últimos 15 concursos)")
-        df_recentes = df_concursos.sort_values("concurso", ascending=False).head(15)
+        st.subheader("Tendência Recente (últimos 20 concursos)")
+        df_recentes = df_concursos.sort_values("concurso", ascending=False).head(20)
         df_freq_recente = get_dezenas_df(df_recentes)
         st.bar_chart(df_freq_recente.set_index("Dezena"), height=300)
 
