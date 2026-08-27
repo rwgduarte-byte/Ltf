@@ -727,4 +727,4 @@ with tab2:
     st.write(f"Total de jogos no caderno: **{total_caderno}**")
     colA, colB = st.columns(2)
     with colA:
-        if st.button("Conferir Caderno
+        if st.button("Conferir Caderno")
