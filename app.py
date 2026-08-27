@@ -522,7 +522,7 @@ with tab2:
 
     df_concursos_tab2 = fetch_all_concursos()
     freq_historica = get_dezenas_freq(df_concursos_tab2) if not df_concursos_tab2.empty else None
-    df_recentes_robustez = df_concursos_tab2.sort_values("concurso", ascending=False).head(20) if not df_concursos_tab2.empty else None
+    df_recentes_robustez = df_concursos_tab2.sort_values("concurso", ascending=False).head(10) if not df_concursos_tab2.empty else None
 
     ciclos_fechados, ciclo_atual = calcular_ciclos_fechados(df_concursos_tab2) if not df_concursos_tab2.empty else ([], None)
     faltantes_ciclo = set(ciclo_atual["faltantes"]) if ciclo_atual else None
@@ -743,7 +743,7 @@ with tab4:
 
         st.divider()
         st.subheader("Tendência Recente (últimos 20 concursos)")
-        df_recentes = df_concursos.sort_values("concurso", ascending=False).head(20)
+        df_recentes = df_concursos.sort_values("concurso", ascending=False).head(10)
         df_freq_recente = get_dezenas_df(df_recentes)
         st.bar_chart(df_freq_recente.set_index("Dezena"), height=300)
 
