@@ -822,10 +822,17 @@ with tab2:
         min_atraso = st.slider("Atraso mínimo para considerar uma dezena 'atrasada'", 1, 15, 3)
         atrasadas_set = get_dezenas_atrasadas(df_concursos_tab2, min_atraso)
         st.write(f"Dezenas atrasadas (atraso ≥ {min_atraso}): **{' '.join(f'{d:02d}' for d in sorted(atrasadas_set))}**")
-        if padrao:
-            min_atrasadas = st.slider("Mínimo de dezenas atrasadas por jogo", 0, min(10, len(atrasadas_set)), max(0, padrao["min_atrasadas"] + ajuste["atrasadas"]))
+        if len(atrasadas_set) == 0:
+            st.info("Não há dezenas atrasadas no momento. Filtro de atrasadas desativado.")
+            min_atrasadas = 0
+        elif padrao:
+            max_atrasadas = min(10, len(atrasadas_set))
+            valor_padrao = max(0, min(padrao["min_atrasadas"] + ajuste["atrasadas"], max_atrasadas))
+            min_atrasadas = st.slider("Mínimo de dezenas atrasadas por jogo", 0, max_atrasadas, valor_padrao)
         else:
-            min_atrasadas = st.slider("Mínimo de dezenas atrasadas por jogo", 0, min(10, len(atrasadas_set)), max(0, 4 + ajuste["atrasadas"]))
+            max_atrasadas = min(10, len(atrasadas_set))
+            valor_padrao = max(0, min(4 + ajuste["atrasadas"], max_atrasadas))
+            min_atrasadas = st.slider("Mínimo de dezenas atrasadas por jogo", 0, max_atrasadas, valor_padrao)
         st.caption(f"Total de dezenas atrasadas disponíveis: **{len(atrasadas_set)}**")
     st.divider()
     st.subheader("Ciclo Fechado das Dezenas")
