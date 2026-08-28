@@ -16,6 +16,8 @@ PRIMES = [2, 3, 5, 7, 11, 13, 17, 19, 23]
 VALOR_APOSTA = 3.50
 PREMIOS = {11: 7.00, 12: 14.00, 13: 35.00, 14: 0.00, 15: 0.00}
 MAX_SEQUENCIA_CONSECUTIVA = 10  # bloqueia jogos com 10+ números consecutivos
+MODALIDADE_FILTRADO = "filtrado"
+MODALIDADE_GRUPOS = "grupos"
 # =========================
 # Funções de Utilitário
 # =========================
@@ -59,14 +61,29 @@ def create_jogos_table():
     conn.commit()
     conn.close()
 
-def salvar_jogos_gerados(jogos, concurso_alvo=None):
+def adicionar_colunas_se_necessario():
+    conn = get_conn()
+    cursor = conn.cursor()
+    for sql in [
+        "ALTER TABLE jogos_gerados ADD COLUMN aposta_confirmada INTEGER DEFAULT 0",
+        "ALTER TABLE jogos_gerados ADD COLUMN concurso_jogado INTEGER",
+        "ALTER TABLE jogos_gerados ADD COLUMN modalidade TEXT",
+    ]:
+        try:
+            cursor.execute(sql)
+        except Exception:
+            pass
+    conn.commit()
+    conn.close()
+
+def salvar_jogos_gerados(jogos, concurso_alvo=None, modalidade=None):
     conn = get_conn()
     cursor = conn.cursor()
     data_geracao = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for jogo in jogos:
         cursor.execute(
-            "INSERT INTO jogos_gerados (concurso_alvo, data_geracao, d1,d2,d3,d4,d5,d6,d7,d8,d9,d10,d11,d12,d13,d14,d15, conferido) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)",
-            (concurso_alvo, data_geracao, *jogo)
+            "INSERT INTO jogos_gerados (concurso_alvo, data_geracao, d1,d2,d3,d4,d5,d6,d7,d8,d9,d10,d11,d12,d13,d14,d15, conferido, modalidade) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)",
+            (concurso_alvo, data_geracao, *jogo, modalidade)
         )
     conn.commit()
     conn.close()
@@ -112,20 +129,6 @@ def calcular_premio(pontos):
         return 0.0
     return PREMIOS.get(pontos, 0.0)
 
-def adicionar_colunas_se_necessario():
-    conn = get_conn()
-    cursor = conn.cursor()
-    for sql in [
-        "ALTER TABLE jogos_gerados ADD COLUMN aposta_confirmada INTEGER DEFAULT 0",
-        "ALTER TABLE jogos_gerados ADD COLUMN concurso_jogado INTEGER",
-    ]:
-        try:
-            cursor.execute(sql)
-        except Exception:
-            pass
-    conn.commit()
-    conn.close()
-
 def marcar_aposta_confirmada(jogos, concurso_jogado):
     conn = get_conn()
     cursor = conn.cursor()
@@ -145,7 +148,7 @@ def marcar_aposta_confirmada(jogos, concurso_jogado):
 def calcular_resultado_aposta(concurso_num):
     conn = get_conn()
     df = pd.read_sql_query(
-        "SELECT pontos FROM jogos_gerados WHERE aposta_confirmada=1 AND concurso_jogado=? AND conferido=1 AND pontos IS NOT NULL",
+        "SELECT pontos, modalidade FROM jogos_gerados WHERE aposta_confirmada=1 AND concurso_jogado=? AND conferido=1 AND pontos IS NOT NULL",
         conn, params=(concurso_num,)
     )
     conn.close()
@@ -154,7 +157,8 @@ def calcular_resultado_aposta(concurso_num):
     n_jogos = len(df)
     investimento = n_jogos * VALOR_APOSTA
     premio = sum(calcular_premio(p) for p in df["pontos"])
-    return {"concurso": concurso_num, "n_jogos": n_jogos, "investimento": investimento, "premio": premio, "saldo": premio - investimento}
+    n_11plus = int((df["pontos"] >= 11).sum())
+    return {"concurso": concurso_num, "n_jogos": n_jogos, "investimento": investimento, "premio": premio, "saldo": premio - investimento, "n_11plus": n_11plus}
 
 def get_resultado_ultima_aposta():
     conn = get_conn()
@@ -172,7 +176,7 @@ def exibir_resultado_aposta(resultado):
         return
     st.markdown("#### 💰 Resultado da Aposta")
     st.write(f"Concurso **{resultado['concurso']}** | {resultado['n_jogos']} jogos | Investimento **R$ {resultado['investimento']:.2f}**")
-    st.write(f"Prêmios: **R$ {resultado['premio']:.2f}**")
+    st.write(f"Prêmios: **R$ {resultado['premio']:.2f}** | Jogos com 11+: **{resultado['n_11plus']}**")
     if resultado["saldo"] >= 0:
         st.success(f"Saldo: **+R$ {resultado['saldo']:.2f}** (lucro)")
     else:
@@ -207,6 +211,36 @@ def calcular_ajuste_filtros():
         return {"robustez": -5, "atrasadas": -1, "rep_min": -1, "rep_max": 1}
     else:
         return {"robustez": -10, "atrasadas": -2, "rep_min": -2, "rep_max": 2}
+
+def comparativo_modalidades():
+    """Compara eficácia entre as modalidades 'filtrado' e 'grupos' nas apostas confirmadas."""
+    conn = get_conn()
+    df = pd.read_sql_query(
+        "SELECT modalidade, pontos FROM jogos_gerados WHERE aposta_confirmada=1 AND conferido=1 AND pontos IS NOT NULL AND modalidade IS NOT NULL",
+        conn
+    )
+    conn.close()
+    if df.empty:
+        return None
+    linhas = []
+    for mod in [MODALIDADE_FILTRADO, MODALIDADE_GRUPOS]:
+        sub = df[df["modalidade"] == mod]
+        if sub.empty:
+            continue
+        n = len(sub)
+        invest = n * VALOR_APOSTA
+        premio = sum(calcular_premio(p) for p in sub["pontos"])
+        n_11plus = int((sub["pontos"] >= 11).sum())
+        linhas.append({
+            "Modalidade": "Filtrado (16)" if mod == MODALIDADE_FILTRADO else "Grupos (10)",
+            "Jogos": n,
+            "Investimento": round(invest, 2),
+            "Prêmio": round(premio, 2),
+            "Saldo": round(premio - invest, 2),
+            "Jogos 11+": n_11plus,
+            "Taxa 11+": f"{100*n_11plus/n:.1f}%",
+        })
+    return pd.DataFrame(linhas)
 
 def iso_to_br(data_iso):
     if not data_iso:
@@ -440,10 +474,7 @@ def get_dezenas_atrasadas(df_concursos, min_atraso=3):
 # Ciclo Fechado das Dezenas
 # =========================
 def calcular_ciclos_fechados(df_concursos):
-    """Calcula os ciclos fechados a partir do primeiro concurso e o ciclo atual (aberto).
-    Um ciclo fecha quando as 25 dezenas aparecem; abre outro na sequência,
-    começando com as 15 dezenas do sorteio que fechou o ciclo anterior.
-    """
+    """Calcula os ciclos fechados a partir do primeiro concurso e o ciclo atual (aberto)."""
     df = df_concursos.sort_values("concurso").copy()
     concursos = df["concurso"].tolist()
     if not concursos:
@@ -578,51 +609,75 @@ def conferir_caderno(caderno, resultado, min_pontos=11):
     return df
 
 # =========================
-# Funções de Análise de Dados
+# Geração por Grupos (nova formatação)
 # =========================
-def get_dezenas_df(df_concursos):
-    freq = {d: 0 for d in range(1, 26)}
-    for _, row in df_concursos.iterrows():
-        for i in range(1, 16):
-            freq[int(row[f"d{i}"])] += 1
-    return pd.DataFrame({"Dezena": list(freq.keys()), "Frequência": list(freq.values())})
+def sortear_grupos(last_contest_dezenas):
+    """Gera os grupos A (sorteadas em 5x3), B (não sorteadas em 5x2)."""
+    if not last_contest_dezenas or len(last_contest_dezenas) != 15:
+        return None
+    sorteadas = list(last_contest_dezenas)
+    nao_sorteadas = [d for d in range(1, 26) if d not in sorteadas]
+    random.shuffle(sorteadas)
+    random.shuffle(nao_sorteadas)
+    grupos_tres = [
+        sorted(sorteadas[0:3]),
+        sorted(sorteadas[3:6]),
+        sorted(sorteadas[6:9]),
+        sorted(sorteadas[9:12]),
+        sorted(sorteadas[12:15]),
+    ]
+    grupos_dois = [
+        sorted(nao_sorteadas[0:2]),
+        sorted(nao_sorteadas[2:4]),
+        sorted(nao_sorteadas[4:6]),
+        sorted(nao_sorteadas[6:8]),
+        sorted(nao_sorteadas[8:10]),
+    ]
+    return grupos_tres, grupos_dois
 
-def get_pares_impares_series(df_concursos):
-    df = df_concursos.sort_values("concurso").copy()
-    pares = []
-    for _, row in df.iterrows():
-        dezenas = [int(row[f"d{i}"]) for i in range(1, 16)]
-        pares.append(sum(1 for d in dezenas if d % 2 == 0))
-    df["Pares"] = pares
-    df["Ímpares"] = 15 - df["Pares"]
-    return df
+def validar_grupos(grupos_tres, grupos_dois):
+    """Valida os grupos editados. Retorna (valido, mensagem)."""
+    erros = []
+    todos = []
+    for i, g in enumerate(grupos_tres):
+        if len(g) != 3:
+            erros.append(f"A{i+1} deve ter exatamente 3 dezenas (tem {len(g)}).")
+        if len(set(g)) != len(g):
+            erros.append(f"A{i+1} tem dezenas repetidas.")
+        if any(not (1 <= d <= 25) for d in g):
+            erros.append(f"A{i+1} tem dezena fora de 1 a 25.")
+        todos.extend(g)
+    for i, g in enumerate(grupos_dois):
+        if len(g) != 2:
+            erros.append(f"B{i+1} deve ter exatamente 2 dezenas (tem {len(g)}).")
+        if len(set(g)) != len(g):
+            erros.append(f"B{i+1} tem dezenas repetidas.")
+        if any(not (1 <= d <= 25) for d in g):
+            erros.append(f"B{i+1} tem dezena fora de 1 a 25.")
+        todos.extend(g)
+    if len(set(todos)) != len(todos):
+        erros.append("Há dezenas repetidas entre grupos diferentes.")
+    if erros:
+        return False, " ".join(erros)
+    return True, "Grupos válidos."
 
-def get_soma_series(df_concursos):
-    df = df_concursos.sort_values("concurso").copy()
-    somas = []
-    for _, row in df.iterrows():
-        dezenas = [int(row[f"d{i}"]) for i in range(1, 16)]
-        somas.append(sum(dezenas))
-    df["Soma"] = somas
-    return df
-
-def get_repeticao_series(df_concursos):
-    df = df_concursos.sort_values("concurso").copy()
-    anteriores = []
-    for _, row in df.iterrows():
-        anteriores.append(set(int(row[f"d{i}"]) for i in range(1, 16)))
-    repeticoes = [0]
-    for i in range(1, len(anteriores)):
-        repeticoes.append(len(anteriores[i] & anteriores[i - 1]))
-    df["Repetições"] = repeticoes
-    return df
+def combinar_grupos(grupos_tres, grupos_dois):
+    """Monta G1..G5 (A_i + B_i) e combina 3 a 3 -> 10 jogos de 15 dezenas."""
+    grupos_cinco = [
+        sorted(grupos_tres[i] + grupos_dois[i]) for i in range(5)
+    ]
+    jogos = []
+    for i in range(5):
+        for j in range(i + 1, 5):
+            for k in range(j + 1, 5):
+                jogos.append(sorted(grupos_cinco[i] + grupos_cinco[j] + grupos_cinco[k]))
+    return grupos_cinco, jogos
 
 # =========================
 # Melhoria 1: Aprender o padrão real dos sorteios
 # =========================
 def calcular_padrao_real(df_concursos, ultimas=20):
-    """Mede o padrão real dos últimos sorteios (pares, repetições, primos, soma, atrasadas)
-    para posicionar os filtros perto do que realmente acontece."""
+    """Mede o padrão real dos últimos sorteios para posicionar os filtros."""
     if df_concursos is None or df_concursos.empty:
         return None
     df = df_concursos.sort_values("concurso").tail(ultimas).copy()
@@ -672,6 +727,9 @@ create_jogos_table()
 adicionar_colunas_se_necessario()
 if "caderno" not in st.session_state:
     st.session_state["caderno"] = []
+if "grupos_tres" not in st.session_state:
+    st.session_state["grupos_tres"] = None
+    st.session_state["grupos_dois"] = None
 tab1, tab2, tab3, tab4 = st.tabs(["Cadastrar Concurso", "Gerar Jogos", "Editar Concurso", "Análise de Dados"])
 
 # =========================
@@ -749,7 +807,7 @@ with tab2:
         last_contest_dezenas = [last_contest[f"d{i}"] for i in range(1, 16)]
         st.write(f"Dezenas do último concurso: **{' '.join(f'{d:02d}' for d in last_contest_dezenas)}**")
     else:
-        st.warning("Nenhum concurso cadastrado. Filtro de repetição não será aplicado.")
+        st.warning("Nenhum concurso cadastrado. Cadastre ou importe o resultado para gerar jogos.")
     df_concursos_tab2 = fetch_all_concursos()
     freq_historica = get_dezenas_freq(df_concursos_tab2) if not df_concursos_tab2.empty else None
     aprendizado = get_aprendizado_dezenas()
@@ -854,9 +912,10 @@ with tab2:
             st.info(f"Faltam **{ciclo_atual['num_faltantes']}** dezenas. Regra aplicada: **metade ({min_faltantes_ciclo}) das faltantes por jogo**.")
         st.caption("Regra automática: faltam 1-3 → força todas | faltam 4+ → metade por jogo.")
     st.divider()
-    st.subheader("Gerar Jogos")
+    st.subheader("Gerar Jogos Filtrados (16)")
     num_jogos_to_generate = st.radio("Quantos jogos deseja gerar?", (16, 32, 64, 128), horizontal=True)
-    if st.button(f"Gerar {num_jogos_to_generate} Jogos"):
+    gerar_habilitado = not df_concursos_tab2.empty
+    if st.button(f"Gerar {num_jogos_to_generate} Jogos Filtrados", disabled=not gerar_habilitado):
         generated_games = []
         existing_games_set = set()
         progress_bar = st.progress(0)
@@ -883,8 +942,8 @@ with tab2:
                 break
             progress_bar.progress((i + 1) / num_jogos_to_generate)
         if generated_games:
-            st.success(f"{len(generated_games)} jogos gerados com sucesso!")
-            salvar_jogos_gerados(generated_games, concurso_alvo=last_contest["concurso"] if last_contest else None)
+            st.success(f"{len(generated_games)} jogos filtrados gerados com sucesso!")
+            salvar_jogos_gerados(generated_games, concurso_alvo=last_contest["concurso"] if last_contest else None, modalidade=MODALIDADE_FILTRADO)
             st.dataframe(pd.DataFrame(generated_games, columns=[f"D{i}" for i in range(1, 16)]))
             caderno_set = set(tuple(j) for j in st.session_state["caderno"])
             novos = 0
@@ -899,9 +958,67 @@ with tab2:
         else:
             st.error("Nenhum jogo foi gerado. Verifique os filtros e se há concursos cadastrados.")
     st.divider()
+    st.subheader("Gerar 10 Jogos por Grupos (nova formatação)")
+    if st.button("🎲 Sortear Grupos (5x3 sorteadas + 5x2 restantes)", disabled=not gerar_habilitado):
+        if not last_contest:
+            st.warning("Cadastre o último concurso primeiro.")
+        else:
+            resultado = sortear_grupos(last_contest_dezenas)
+            if resultado:
+                st.session_state["grupos_tres"], st.session_state["grupos_dois"] = resultado
+                st.success("Grupos sorteados! Confira e edite abaixo antes de combinar.")
+    if st.session_state["grupos_tres"] is not None:
+        st.markdown("#### Grupos Sorteados (edite se quiser)")
+        grupos_tres = st.session_state["grupos_tres"]
+        grupos_dois = st.session_state["grupos_dois"]
+        col_a1, col_a2, col_a3, col_a4, col_a5 = st.columns(5)
+        cols_a = [col_a1, col_a2, col_a3, col_a4, col_a5]
+        for i, col in enumerate(cols_a):
+            with col:
+                st.markdown(f"**A{i+1}** (sorteadas)")
+                grupos_tres[i] = sorted([int(x) for x in st.text_input(
+                    f"A{i+1}", value=" ".join(f"{d:02d}" for d in grupos_tres[i]), key=f"a{i}"
+                ).replace(",", " ").split() if x.strip()])
+        col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns(5)
+        cols_b = [col_b1, col_b2, col_b3, col_b4, col_b5]
+        for i, col in enumerate(cols_b):
+            with col:
+                st.markdown(f"**B{i+1}** (restantes)")
+                grupos_dois[i] = sorted([int(x) for x in st.text_input(
+                    f"B{i+1}", value=" ".join(f"{d:02d}" for d in grupos_dois[i]), key=f"b{i}"
+                ).replace(",", " ").split() if x.strip()])
+        st.divider()
+        valido, mensagem = validar_grupos(grupos_tres, grupos_dois)
+        if valido:
+            st.success(mensagem)
+        else:
+            st.error(mensagem)
+        st.markdown("#### Grupos de 5 (G1..G5 = A + B)")
+        grupos_cinco = [sorted(grupos_tres[i] + grupos_dois[i]) for i in range(5)]
+        for i in range(5):
+            st.write(f"**G{i+1}**: {' '.join(f'{d:02d}' for d in grupos_cinco[i])}")
+        if st.button("🎯 Gerar 10 Jogos (combinar G1..G5)", disabled=not valido):
+            grupos_cinco_final, generated_games = combinar_grupos(grupos_tres, grupos_dois)
+            if generated_games:
+                st.success(f"{len(generated_games)} jogos gerados com sucesso!")
+                salvar_jogos_gerados(generated_games, concurso_alvo=last_contest["concurso"] if last_contest else None, modalidade=MODALIDADE_GRUPOS)
+                st.dataframe(pd.DataFrame(generated_games, columns=[f"D{i}" for i in range(1, 16)]))
+                caderno_set = set(tuple(j) for j in st.session_state["caderno"])
+                novos = 0
+                for j in generated_games:
+                    tj = tuple(j)
+                    if tj not in caderno_set:
+                        st.session_state["caderno"].append(j)
+                        caderno_set.add(tj)
+                        novos += 1
+                st.info(f"Caderno atualizado: +{novos} jogos (total: {len(st.session_state['caderno'])}).")
+                export_games(generated_games)
+    else:
+        st.info("Clique em '🎲 Sortear Grupos' para começar.")
+    st.divider()
     st.subheader("Caderno de Jogos")
     total_caderno = len(st.session_state["caderno"])
-    st.write(f"Total de jogos no caderno: **{total_caderno}**")
+    st.write(f"Total de jogos no caderno: **{total_caderno}** (meta: 26 = 16 filtrados + 10 grupos)")
     exibir_resultado_aposta(get_resultado_ultima_aposta())
     colA, colB = st.columns(2)
     with colA:
@@ -972,96 +1089,27 @@ with tab3:
                 st.error("Dados do concurso selecionado não encontrados.")
 
 # =========================
-# Aba 4: Análise de Dados
+# Aba 4: Análise de Dados (apenas Comparativo de Modalidades)
 # =========================
 with tab4:
-    st.header("📊 Análise de Dados dos Concursos")
-    df_concursos = fetch_all_concursos()
-    if df_concursos.empty:
-        st.info("Nenhum concurso cadastrado. Importe ou cadastre concursos para ver as análises.")
+    st.header("📊 Comparativo entre Modalidades (Filtrado vs Grupos)")
+    df_comp = comparativo_modalidades()
+    if df_comp is None or df_comp.empty:
+        st.info("Ainda não há apostas confirmadas e conferidas para comparar. Confirme apostas e cadastre resultados para ver o comparativo.")
     else:
-        st.caption(f"Analisando **{len(df_concursos)}** concursos cadastrados.")
-        st.subheader("Frequência de Cada Dezena (1 a 25)")
-        df_freq = get_dezenas_df(df_concursos)
-        st.bar_chart(df_freq.set_index("Dezena"), height=350)
-        col_rank1, col_rank2 = st.columns(2)
-        with col_rank1:
-            st.markdown("#### 🔥 Dezenas Mais Sorteadas")
-            mais = df_freq.sort_values("Frequência", ascending=False).head(10)
-            st.dataframe(mais.reset_index(drop=True), use_container_width=True)
-        with col_rank2:
-            st.markdown("#### ❄️ Dezenas Menos Sorteadas")
-            menos = df_freq.sort_values("Frequência", ascending=True).head(10)
-            st.dataframe(menos.reset_index(drop=True), use_container_width=True)
-        st.divider()
-        st.subheader("Tendência Recente (últimos 10 concursos)")
-        df_recentes = df_concursos.sort_values("concurso", ascending=False).head(10)
-        df_freq_recente = get_dezenas_df(df_recentes)
-        st.bar_chart(df_freq_recente.set_index("Dezena"), height=300)
-        col_hot, col_cold = st.columns(2)
-        with col_hot:
-            st.markdown("#### 🔥 Quentes (recentes)")
-            quentes = df_freq_recente.sort_values("Frequência", ascending=False).head(8)
-            st.dataframe(quentes.reset_index(drop=True), use_container_width=True)
-        with col_cold:
-            st.markdown("#### ❄️ Frias (recentes)")
-            frias = df_freq_recente.sort_values("Frequência", ascending=True).head(8)
-            st.dataframe(frias.reset_index(drop=True), use_container_width=True)
-        st.divider()
-        st.subheader("Ciclo das Dezenas (Atraso e Ciclo Médio)")
-        df_ciclo = get_atraso_e_ciclo(df_concursos)
-        st.bar_chart(df_ciclo.set_index("Dezena")[["Atraso"]], height=300)
-        st.caption("Atraso = há quantos concursos a dezena não aparece. Ciclo médio = intervalo médio entre aparições.")
-        st.dataframe(df_ciclo, use_container_width=True)
-        st.divider()
-        st.subheader("Ciclo Fechado das Dezenas")
-        ciclos, ciclo_atual_analise = calcular_ciclos_fechados(df_concursos)
-        if ciclo_atual_analise:
-            st.markdown("#### Ciclo Atual (Aberto)")
-            st.write(f"Ciclo **{ciclo_atual_analise['num_ciclo']}** — iniciado no concurso **{ciclo_atual_analise['inicio']}**")
-            if ciclo_atual_analise["num_faltantes"] > 0:
-                st.write(f"Dezenas que ainda faltam: **{' '.join(f'{d:02d}' for d in ciclo_atual_analise['faltantes'])}**")
-                st.write(f"Total faltando: **{ciclo_atual_analise['num_faltantes']}**")
-            else:
-                st.success("Ciclo fechado! Todas as 25 dezenas já apareceram.")
-        if ciclos:
-            st.markdown("#### Histórico de Ciclos Fechados")
-            df_ciclos = pd.DataFrame([{
-                "Ciclo": c["ciclo"],
-                "Início": c["inicio"],
-                "Fim": c["fim"],
-                "Duração (sorteios)": c["duracao"],
-                "Dezena(s) que fechou(ram)": " ".join(f"{d:02d}" for d in c["fechadoras"]),
-            } for c in ciclos])
-            st.dataframe(df_ciclos, use_container_width=True)
-            st.markdown("#### Frequência dos Ciclos")
-            duracoes = [c["duracao"] for c in ciclos]
-            st.write(f"Média de sorteios por ciclo: **{sum(duracoes)/len(duracoes):.1f}**")
-            st.write(f"Mínimo: **{min(duracoes)}** | Máximo: **{max(duracoes)}**")
-            st.caption(f"Total de ciclos fechados: **{len(ciclos)}**")
-            st.markdown("#### Dezenas que Mais Fecham Ciclos")
-            fechadoras_freq = {}
-            for c in ciclos:
-                for d in c["fechadoras"]:
-                    fechadoras_freq[d] = fechadoras_freq.get(d, 0) + 1
-            df_fechadoras = pd.DataFrame(
-                sorted(fechadoras_freq.items(), key=lambda x: x[1], reverse=True),
-                columns=["Dezena", "Vezes que fechou ciclo"]
-            )
-            st.dataframe(df_fechadoras, use_container_width=True)
-        else:
-            st.info("Nenhum ciclo fechado ainda. Continue cadastrando concursos.")
-        st.divider()
-        st.subheader("Evolução de Pares e Ímpares por Concurso")
-        df_pi = get_pares_impares_series(df_concursos)
-        st.line_chart(df_pi.set_index("concurso")[["Pares", "Ímpares"]], height=350)
-        st.divider()
-        st.subheader("Evolução da Soma das Dezenas por Concurso")
-        df_soma = get_soma_series(df_concursos)
-        st.line_chart(df_soma.set_index("concurso")[["Soma"]], height=350)
-        st.caption(f"Média da soma: **{df_soma['Soma'].mean():.1f}** | Mínima: **{df_soma['Soma'].min()}** | Máxima: **{df_soma['Soma'].max()}**")
-        st.divider()
-        st.subheader("Repetições entre Concursos Consecutivos")
-        df_rep = get_repeticao_series(df_concursos)
-        st.line_chart(df_rep.set_index("concurso")[["Repetições"]], height=350)
-        st.caption(f"Média de repetições entre concursos: **{df_rep['Repetições'].mean():.1f}**")
+        st.dataframe(df_comp, use_container_width=True)
+        if len(df_comp) == 2:
+            linha_f = df_comp[df_comp["Modalidade"].str.contains("Filtrado")]
+            linha_g = df_comp[df_comp["Modalidade"].str.contains("Grupos")]
+            if not linha_f.empty and not linha_g.empty:
+                saldo_f = float(linha_f.iloc[0]["Saldo"])
+                saldo_g = float(linha_g.iloc[0]["Saldo"])
+                taxa_f = float(linha_f.iloc[0]["Taxa 11+"].replace("%", ""))
+                taxa_g = float(linha_g.iloc[0]["Taxa 11+"].replace("%", ""))
+                if saldo_f > saldo_g:
+                    st.success(f"🏆 Modalidade **Filtrado** está com melhor saldo (R$ {saldo_f:.2f} vs R$ {saldo_g:.2f}).")
+                elif saldo_g > saldo_f:
+                    st.success(f"🏆 Modalidade **Grupos** está com melhor saldo (R$ {saldo_g:.2f} vs R$ {saldo_f:.2f}).")
+                else:
+                    st.info("As duas modalidades estão empatadas em saldo.")
+                st.caption(f"Taxa de acerto 11+: Filtrado {taxa_f:.1f}% | Grupos {taxa_g:.1f}%")
