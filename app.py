@@ -15,6 +15,7 @@ EXCEL_SHEET_NAME = "LOTOFÁCIL"
 PRIMES = [2, 3, 5, 7, 11, 13, 17, 19, 23]
 VALOR_APOSTA = 3.50
 PREMIOS = {11: 7.00, 12: 14.00, 13: 35.00, 14: 0.00, 15: 0.00}
+MAX_SEQUENCIA_CONSECUTIVA = 10  # bloqueia jogos com 10+ números consecutivos
 # =========================
 # Funções de Utilitário
 # =========================
@@ -506,6 +507,22 @@ def check_game_filters(game, last_contest_dezenas, min_rep, max_rep, min_pares, 
             return False
     return True
 
+def maior_sequencia_consecutiva(game):
+    """Retorna o tamanho da maior sequência de números consecutivos no jogo."""
+    maior = 1
+    atual = 1
+    for i in range(1, len(game)):
+        if game[i] - game[i - 1] == 1:
+            atual += 1
+            maior = max(maior, atual)
+        else:
+            atual = 1
+    return maior
+
+def tem_sequencia_grande(game, limite=MAX_SEQUENCIA_CONSECUTIVA):
+    """Retorna True se o jogo tiver uma sequência de 'limite' ou mais números consecutivos."""
+    return maior_sequencia_consecutiva(game) >= limite
+
 def generate_unique_game_with_filters(existing_games, last_contest_dezenas, min_rep, max_rep, min_pares, max_pares, min_primos, max_primos, freq=None, df_recentes=None, min_robustez=0.0, atrasadas=None, min_atrasadas=0, faltantes_ciclo=None, min_faltantes_ciclo=0, max_attempts=50000):
     attempts = 0
     while attempts < max_attempts:
@@ -513,6 +530,9 @@ def generate_unique_game_with_filters(existing_games, last_contest_dezenas, min_
             game = generate_weighted_random_game(freq)
         else:
             game = sorted(random.sample(range(1, 26), 15))
+        if tem_sequencia_grande(game):
+            attempts += 1
+            continue
         if tuple(game) in existing_games:
             attempts += 1
             continue
@@ -596,6 +616,50 @@ def get_repeticao_series(df_concursos):
         repeticoes.append(len(anteriores[i] & anteriores[i - 1]))
     df["Repetições"] = repeticoes
     return df
+
+# =========================
+# Melhoria 1: Aprender o padrão real dos sorteios
+# =========================
+def calcular_padrao_real(df_concursos, ultimas=20):
+    """Mede o padrão real dos últimos sorteios (pares, repetições, primos, soma, atrasadas)
+    para posicionar os filtros perto do que realmente acontece."""
+    if df_concursos is None or df_concursos.empty:
+        return None
+    df = df_concursos.sort_values("concurso").tail(ultimas).copy()
+    pares_list = []
+    primos_list = []
+    soma_list = []
+    for _, row in df.iterrows():
+        dezenas = [int(row[f"d{i}"]) for i in range(1, 16)]
+        pares_list.append(sum(1 for d in dezenas if d % 2 == 0))
+        primos_list.append(sum(1 for d in dezenas if d in PRIMES))
+        soma_list.append(sum(dezenas))
+    sets = [set(int(row[f"d{i}"]) for i in range(1, 16)) for _, row in df.iterrows()]
+    rep_list = [len(sets[i] & sets[i - 1]) for i in range(1, len(sets))]
+    atrasadas_list = []
+    df_ciclo_hist = get_atraso_e_ciclo(df_concursos)
+    atrasadas_hist = set(df_ciclo_hist[df_ciclo_hist["Atraso"] >= 3]["Dezena"].tolist())
+    for _, row in df.iterrows():
+        dezenas = [int(row[f"d{i}"]) for i in range(1, 16)]
+        atrasadas_list.append(len(set(dezenas) & atrasadas_hist))
+    def q(serie, p):
+        if len(serie) == 0:
+            return 0
+        return int(round(pd.Series(serie).quantile(p)))
+    min_pares = q(pares_list, 0.25)
+    max_pares = max(min_pares, q(pares_list, 0.75))
+    min_rep = q(rep_list, 0.25) if rep_list else 0
+    max_rep = max(min_rep, q(rep_list, 0.75)) if rep_list else 15
+    min_primos = q(primos_list, 0.25)
+    max_primos = max(min_primos, q(primos_list, 0.75))
+    min_atrasadas = int(round(pd.Series(atrasadas_list).median())) if atrasadas_list else 0
+    return {
+        "min_pares": min_pares, "max_pares": max_pares,
+        "min_rep": min_rep, "max_rep": max_rep,
+        "min_primos": min_primos, "max_primos": max_primos,
+        "min_atrasadas": min_atrasadas,
+        "soma_media": int(round(pd.Series(soma_list).mean())) if soma_list else 0,
+    }
 
 # =========================
 # Configuração da Página Streamlit
@@ -700,23 +764,38 @@ with tab2:
     ajuste = calcular_ajuste_filtros()
     if any(v != 0 for v in ajuste.values()):
         st.caption(f"🤖 Ajuste automático (ROI da última aposta): robustez {ajuste['robustez']:+d} | atrasadas {ajuste['atrasadas']:+d} | repetições {ajuste['rep_min']:+d} a {ajuste['rep_max']:+d}")
+    padrao = calcular_padrao_real(df_concursos_tab2)
+    if padrao:
+        st.caption(f"📈 Padrão real dos últimos 20 sorteios: pares {padrao['min_pares']}–{padrao['max_pares']} | repetições {padrao['min_rep']}–{padrao['max_rep']} | primos {padrao['min_primos']}–{padrao['max_primos']} | soma média {padrao['soma_media']}")
     col_filters1, col_filters2, col_filters3 = st.columns(3)
     with col_filters1:
         st.markdown("#### Repetições do Último Concurso")
-        min_rep = st.slider("Mínimo de Repetições", 0, 15, max(0, 9 + ajuste["rep_min"]) if last_contest else 0)
-        max_rep = st.slider("Máximo de Repetições", 0, 15, min(15, 10 + ajuste["rep_max"]) if last_contest else 15)
+        if padrao and last_contest:
+            min_rep = st.slider("Mínimo de Repetições", 0, 15, max(0, padrao["min_rep"] + ajuste["rep_min"]))
+            max_rep = st.slider("Máximo de Repetições", 0, 15, min(15, padrao["max_rep"] + ajuste["rep_max"]))
+        else:
+            min_rep = st.slider("Mínimo de Repetições", 0, 15, max(0, 9 + ajuste["rep_min"]) if last_contest else 0)
+            max_rep = st.slider("Máximo de Repetições", 0, 15, min(15, 10 + ajuste["rep_max"]) if last_contest else 15)
         if min_rep > max_rep:
             st.error("Mínimo de repetições não pode ser maior que o máximo.")
     with col_filters2:
         st.markdown("#### Dezenas Pares")
-        min_pares = st.slider("Mínimo de Pares", 0, 15, 7)
-        max_pares = st.slider("Máximo de Pares", 0, 15, 8)
+        if padrao:
+            min_pares = st.slider("Mínimo de Pares", 0, 15, padrao["min_pares"])
+            max_pares = st.slider("Máximo de Pares", 0, 15, padrao["max_pares"])
+        else:
+            min_pares = st.slider("Mínimo de Pares", 0, 15, 7)
+            max_pares = st.slider("Máximo de Pares", 0, 15, 8)
         if min_pares > max_pares:
             st.error("Mínimo de pares não pode ser maior que o máximo.")
     with col_filters3:
         st.markdown("#### Dezenas Primas")
-        min_primos = st.slider("Mínimo de Primos", 0, len(PRIMES), 4)
-        max_primos = st.slider("Máximo de Primos", 0, len(PRIMES), 6)
+        if padrao:
+            min_primos = st.slider("Mínimo de Primos", 0, len(PRIMES), padrao["min_primos"])
+            max_primos = st.slider("Máximo de Primos", 0, len(PRIMES), padrao["max_primos"])
+        else:
+            min_primos = st.slider("Mínimo de Primos", 0, len(PRIMES), 4)
+            max_primos = st.slider("Máximo de Primos", 0, len(PRIMES), 6)
         if min_primos > max_primos:
             st.error("Mínimo de primos não pode ser maior que o máximo.")
     st.divider()
@@ -743,7 +822,10 @@ with tab2:
         min_atraso = st.slider("Atraso mínimo para considerar uma dezena 'atrasada'", 1, 15, 3)
         atrasadas_set = get_dezenas_atrasadas(df_concursos_tab2, min_atraso)
         st.write(f"Dezenas atrasadas (atraso ≥ {min_atraso}): **{' '.join(f'{d:02d}' for d in sorted(atrasadas_set))}**")
-        min_atrasadas = st.slider("Mínimo de dezenas atrasadas por jogo", 0, min(10, len(atrasadas_set)), max(0, 4 + ajuste["atrasadas"]))
+        if padrao:
+            min_atrasadas = st.slider("Mínimo de dezenas atrasadas por jogo", 0, min(10, len(atrasadas_set)), max(0, padrao["min_atrasadas"] + ajuste["atrasadas"]))
+        else:
+            min_atrasadas = st.slider("Mínimo de dezenas atrasadas por jogo", 0, min(10, len(atrasadas_set)), max(0, 4 + ajuste["atrasadas"]))
         st.caption(f"Total de dezenas atrasadas disponíveis: **{len(atrasadas_set)}**")
     st.divider()
     st.subheader("Ciclo Fechado das Dezenas")
