@@ -13,6 +13,8 @@ DB_FILE = os.path.join(DB_FOLDER, "lotofacil.db")
 OUTPUT_FOLDER = "outputs"
 EXCEL_SHEET_NAME = "LOTOFÁCIL"
 PRIMES = [2, 3, 5, 7, 11, 13, 17, 19, 23]
+VALOR_APOSTA = 3.50
+PREMIOS = {11: 7.00, 12: 14.00, 13: 35.00, 14: 0.00, 15: 0.00}
 # =========================
 # Funções de Utilitário
 # =========================
@@ -101,8 +103,91 @@ def get_aprendizado_dezenas():
                 peso[int(row[f"d{i}"])] += 1
     return peso
 
+# =========================
+# Avaliação de ROI das Apostas
+# =========================
+def calcular_premio(pontos):
+    if pontos < 11:
+        return 0.0
+    return PREMIOS.get(pontos, 0.0)
+
+def adicionar_colunas_se_necessario():
+    conn = get_conn()
+    cursor = conn.cursor()
+    for sql in [
+        "ALTER TABLE jogos_gerados ADD COLUMN aposta_confirmada INTEGER DEFAULT 0",
+        "ALTER TABLE jogos_gerados ADD COLUMN concurso_jogado INTEGER",
+    ]:
+        try:
+            cursor.execute(sql)
+        except Exception:
+            pass
+    conn.commit()
+    conn.close()
+
+def marcar_aposta_confirmada(jogos, concurso_jogado):
+    conn = get_conn()
+    cursor = conn.cursor()
+    marcados = 0
+    for jogo in jogos:
+        cursor.execute(
+            """UPDATE jogos_gerados SET aposta_confirmada=1, concurso_jogado=?
+            WHERE d1=? AND d2=? AND d3=? AND d4=? AND d5=? AND d6=? AND d7=? AND d8=? AND d9=? AND d10=?
+            AND d11=? AND d12=? AND d13=? AND d14=? AND d15=? AND aposta_confirmada=0""",
+            (concurso_jogado, *jogo)
+        )
+        marcados += cursor.rowcount
+    conn.commit()
+    conn.close()
+    return marcados
+
+def calcular_resultado_aposta(concurso_num):
+    conn = get_conn()
+    df = pd.read_sql_query(
+        "SELECT pontos FROM jogos_gerados WHERE aposta_confirmada=1 AND concurso_jogado=? AND conferido=1 AND pontos IS NOT NULL",
+        conn, params=(concurso_num,)
+    )
+    conn.close()
+    if df.empty:
+        return None
+    n_jogos = len(df)
+    investimento = n_jogos * VALOR_APOSTA
+    premio = sum(calcular_premio(p) for p in df["pontos"])
+    return {"concurso": concurso_num, "n_jogos": n_jogos, "investimento": investimento, "premio": premio, "saldo": premio - investimento}
+
+def get_resultado_ultima_aposta():
+    conn = get_conn()
+    df = pd.read_sql_query(
+        "SELECT DISTINCT concurso_jogado FROM jogos_gerados WHERE aposta_confirmada=1 AND conferido=1 AND concurso_jogado IS NOT NULL ORDER BY concurso_jogado DESC LIMIT 1",
+        conn
+    )
+    conn.close()
+    if df.empty:
+        return None
+    return calcular_resultado_aposta(int(df.iloc[0]["concurso_jogado"]))
+
+def exibir_resultado_aposta(resultado):
+    if not resultado:
+        return
+    st.markdown("#### 💰 Resultado da Aposta")
+    st.write(f"Concurso **{resultado['concurso']}** | {resultado['n_jogos']} jogos | Investimento **R$ {resultado['investimento']:.2f}**")
+    st.write(f"Prêmios: **R$ {resultado['premio']:.2f}**")
+    if resultado["saldo"] >= 0:
+        st.success(f"Saldo: **+R$ {resultado['saldo']:.2f}** (lucro)")
+    else:
+        st.error(f"Saldo: **-R$ {abs(resultado['saldo']):.2f}** (prejuízo)")
+
 def calcular_ajuste_filtros():
-    """Retorna ajuste de filtros baseado no desempenho dos últimos 16 palpites conferidos."""
+    """Ajuste baseado no ROI da última aposta confirmada (e, sem aposta, na média de pontos)."""
+    resultado = get_resultado_ultima_aposta()
+    if resultado is not None:
+        saldo = resultado["saldo"]
+        if saldo >= 0:
+            return {"robustez": 0, "atrasadas": 0, "rep_min": 0, "rep_max": 0}
+        elif saldo >= -VALOR_APOSTA * 4:
+            return {"robustez": -5, "atrasadas": -1, "rep_min": -1, "rep_max": 1}
+        else:
+            return {"robustez": -10, "atrasadas": -2, "rep_min": -2, "rep_max": 2}
     conn = get_conn()
     try:
         df = pd.read_sql_query(
@@ -520,6 +605,7 @@ st.title("🎲 Dashboard Lotofácil")
 setup_folders()
 create_table()
 create_jogos_table()
+adicionar_colunas_se_necessario()
 if "caderno" not in st.session_state:
     st.session_state["caderno"] = []
 tab1, tab2, tab3, tab4 = st.tabs(["Cadastrar Concurso", "Gerar Jogos", "Editar Concurso", "Análise de Dados"])
@@ -552,6 +638,7 @@ with tab1:
                             conferidos = conferir_jogos_pendentes(concurso_num, dezenas_validadas)
                             if conferidos > 0:
                                 st.info(f"{conferidos} jogo(s) gerado(s) anteriormente conferidos contra o concurso {concurso_num}.")
+                            exibir_resultado_aposta(calcular_resultado_aposta(concurso_num))
                     else:
                         st.error(dezenas_validadas)
     st.divider()
@@ -572,6 +659,7 @@ with tab1:
                     conferidos_imp = conferir_jogos_pendentes(ultimo_importado["concurso"], dezenas_ultimo)
                     if conferidos_imp > 0:
                         st.info(f"{conferidos_imp} jogo(s) gerado(s) anteriormente conferidos contra o concurso {ultimo_importado['concurso']}.")
+                    exibir_resultado_aposta(calcular_resultado_aposta(ultimo_importado["concurso"]))
             else:
                 st.info("Nenhum novo concurso foi inserido ou o arquivo não pôde ser lido.")
     st.divider()
@@ -611,7 +699,7 @@ with tab2:
     st.subheader("Configurar Filtros")
     ajuste = calcular_ajuste_filtros()
     if any(v != 0 for v in ajuste.values()):
-        st.caption(f"🤖 Ajuste automático (média dos últimos palpites): robustez {ajuste['robustez']:+d} | atrasadas {ajuste['atrasadas']:+d} | repetições {ajuste['rep_min']:+d} a {ajuste['rep_max']:+d}")
+        st.caption(f"🤖 Ajuste automático (ROI da última aposta): robustez {ajuste['robustez']:+d} | atrasadas {ajuste['atrasadas']:+d} | repetições {ajuste['rep_min']:+d} a {ajuste['rep_max']:+d}")
     col_filters1, col_filters2, col_filters3 = st.columns(3)
     with col_filters1:
         st.markdown("#### Repetições do Último Concurso")
@@ -725,6 +813,7 @@ with tab2:
     st.subheader("Caderno de Jogos")
     total_caderno = len(st.session_state["caderno"])
     st.write(f"Total de jogos no caderno: **{total_caderno}**")
+    exibir_resultado_aposta(get_resultado_ultima_aposta())
     colA, colB = st.columns(2)
     with colA:
         if st.button("Conferir Caderno (último sorteio)"):
@@ -745,7 +834,145 @@ with tab2:
                     st.write(resumo)
                     st.dataframe(df_premiados, use_container_width=True)
     with colB:
+        if st.button("✅ Confirmar Aposta (usar caderno)"):
+            if total_caderno == 0:
+                st.warning("O caderno está vazio. Gere jogos primeiro.")
+            else:
+                proximo = (last_contest["concurso"] + 1) if last_contest else None
+                marcados = marcar_aposta_confirmada(st.session_state["caderno"], proximo)
+                st.success(f"Aposta confirmada: {marcados} jogo(s) marcados para o concurso {proximo}. Será conferido automaticamente ao cadastrar o resultado.")
         if st.button("Limpar Caderno"):
             st.session_state["caderno"] = []
             st.success("Caderno limpo.")
-       
+
+# =========================
+# Aba 3: Editar Concurso
+# =========================
+with tab3:
+    st.header("Editar Concurso Existente")
+    all_concursos_df = fetch_all_concursos()
+    if all_concursos_df.empty:
+        st.info("Nenhum concurso cadastrado para editar.")
+    else:
+        concursos_list = all_concursos_df["concurso"].tolist()
+        selected_concurso_num = st.selectbox("Selecione o Concurso para Editar", sorted(concursos_list, reverse=True))
+        if selected_concurso_num:
+            concurso_data = fetch_concurso(selected_concurso_num)
+            if concurso_data:
+                with st.form("form_editar_concurso"):
+                    st.write(f"Editando Concurso **{selected_concurso_num}**")
+                    current_data_br = iso_to_br(concurso_data["data"])
+                    edited_data_br = st.text_input("Data do Sorteio (dd/mm/aaaa)", value=current_data_br)
+                    current_dezenas = [concurso_data[f"d{i}"] for i in range(1, 16)]
+                    edited_dezenas_str = st.text_input("Dezenas (separadas por espaço ou vírgula)", value=" ".join(f"{d:02d}" for d in current_dezenas))
+                    update_submitted = st.form_submit_button("Atualizar Concurso")
+                    if update_submitted:
+                        edited_data_iso = normalize_date_input(edited_data_br)
+                        if not edited_data_iso:
+                            st.error("Formato de data inválido. Use dd/mm/aaaa.")
+                        else:
+                            is_valid, dezenas_validadas = validate_dezenas(edited_dezenas_str.replace(",", " ").split())
+                            if is_valid:
+                                if update_concurso(selected_concurso_num, edited_data_iso, dezenas_validadas):
+                                    st.success(f"Concurso {selected_concurso_num} atualizado com sucesso!")
+                                else:
+                                    st.error("Falha ao atualizar concurso.")
+                            else:
+                                st.error(dezenas_validadas)
+            else:
+                st.error("Dados do concurso selecionado não encontrados.")
+
+# =========================
+# Aba 4: Análise de Dados
+# =========================
+with tab4:
+    st.header("📊 Análise de Dados dos Concursos")
+    df_concursos = fetch_all_concursos()
+    if df_concursos.empty:
+        st.info("Nenhum concurso cadastrado. Importe ou cadastre concursos para ver as análises.")
+    else:
+        st.caption(f"Analisando **{len(df_concursos)}** concursos cadastrados.")
+        st.subheader("Frequência de Cada Dezena (1 a 25)")
+        df_freq = get_dezenas_df(df_concursos)
+        st.bar_chart(df_freq.set_index("Dezena"), height=350)
+        col_rank1, col_rank2 = st.columns(2)
+        with col_rank1:
+            st.markdown("#### 🔥 Dezenas Mais Sorteadas")
+            mais = df_freq.sort_values("Frequência", ascending=False).head(10)
+            st.dataframe(mais.reset_index(drop=True), use_container_width=True)
+        with col_rank2:
+            st.markdown("#### ❄️ Dezenas Menos Sorteadas")
+            menos = df_freq.sort_values("Frequência", ascending=True).head(10)
+            st.dataframe(menos.reset_index(drop=True), use_container_width=True)
+        st.divider()
+        st.subheader("Tendência Recente (últimos 10 concursos)")
+        df_recentes = df_concursos.sort_values("concurso", ascending=False).head(10)
+        df_freq_recente = get_dezenas_df(df_recentes)
+        st.bar_chart(df_freq_recente.set_index("Dezena"), height=300)
+        col_hot, col_cold = st.columns(2)
+        with col_hot:
+            st.markdown("#### 🔥 Quentes (recentes)")
+            quentes = df_freq_recente.sort_values("Frequência", ascending=False).head(8)
+            st.dataframe(quentes.reset_index(drop=True), use_container_width=True)
+        with col_cold:
+            st.markdown("#### ❄️ Frias (recentes)")
+            frias = df_freq_recente.sort_values("Frequência", ascending=True).head(8)
+            st.dataframe(frias.reset_index(drop=True), use_container_width=True)
+        st.divider()
+        st.subheader("Ciclo das Dezenas (Atraso e Ciclo Médio)")
+        df_ciclo = get_atraso_e_ciclo(df_concursos)
+        st.bar_chart(df_ciclo.set_index("Dezena")[["Atraso"]], height=300)
+        st.caption("Atraso = há quantos concursos a dezena não aparece. Ciclo médio = intervalo médio entre aparições.")
+        st.dataframe(df_ciclo, use_container_width=True)
+        st.divider()
+        st.subheader("Ciclo Fechado das Dezenas")
+        ciclos, ciclo_atual_analise = calcular_ciclos_fechados(df_concursos)
+        if ciclo_atual_analise:
+            st.markdown("#### Ciclo Atual (Aberto)")
+            st.write(f"Ciclo **{ciclo_atual_analise['num_ciclo']}** — iniciado no concurso **{ciclo_atual_analise['inicio']}**")
+            if ciclo_atual_analise["num_faltantes"] > 0:
+                st.write(f"Dezenas que ainda faltam: **{' '.join(f'{d:02d}' for d in ciclo_atual_analise['faltantes'])}**")
+                st.write(f"Total faltando: **{ciclo_atual_analise['num_faltantes']}**")
+            else:
+                st.success("Ciclo fechado! Todas as 25 dezenas já apareceram.")
+        if ciclos:
+            st.markdown("#### Histórico de Ciclos Fechados")
+            df_ciclos = pd.DataFrame([{
+                "Ciclo": c["ciclo"],
+                "Início": c["inicio"],
+                "Fim": c["fim"],
+                "Duração (sorteios)": c["duracao"],
+                "Dezena(s) que fechou(ram)": " ".join(f"{d:02d}" for d in c["fechadoras"]),
+            } for c in ciclos])
+            st.dataframe(df_ciclos, use_container_width=True)
+            st.markdown("#### Frequência dos Ciclos")
+            duracoes = [c["duracao"] for c in ciclos]
+            st.write(f"Média de sorteios por ciclo: **{sum(duracoes)/len(duracoes):.1f}**")
+            st.write(f"Mínimo: **{min(duracoes)}** | Máximo: **{max(duracoes)}**")
+            st.caption(f"Total de ciclos fechados: **{len(ciclos)}**")
+            st.markdown("#### Dezenas que Mais Fecham Ciclos")
+            fechadoras_freq = {}
+            for c in ciclos:
+                for d in c["fechadoras"]:
+                    fechadoras_freq[d] = fechadoras_freq.get(d, 0) + 1
+            df_fechadoras = pd.DataFrame(
+                sorted(fechadoras_freq.items(), key=lambda x: x[1], reverse=True),
+                columns=["Dezena", "Vezes que fechou ciclo"]
+            )
+            st.dataframe(df_fechadoras, use_container_width=True)
+        else:
+            st.info("Nenhum ciclo fechado ainda. Continue cadastrando concursos.")
+        st.divider()
+        st.subheader("Evolução de Pares e Ímpares por Concurso")
+        df_pi = get_pares_impares_series(df_concursos)
+        st.line_chart(df_pi.set_index("concurso")[["Pares", "Ímpares"]], height=350)
+        st.divider()
+        st.subheader("Evolução da Soma das Dezenas por Concurso")
+        df_soma = get_soma_series(df_concursos)
+        st.line_chart(df_soma.set_index("concurso")[["Soma"]], height=350)
+        st.caption(f"Média da soma: **{df_soma['Soma'].mean():.1f}** | Mínima: **{df_soma['Soma'].min()}** | Máxima: **{df_soma['Soma'].max()}**")
+        st.divider()
+        st.subheader("Repetições entre Concursos Consecutivos")
+        df_rep = get_repeticao_series(df_concursos)
+        st.line_chart(df_rep.set_index("concurso")[["Repetições"]], height=350)
+        st.caption(f"Média de repetições entre concursos: **{df_rep['Repetições'].mean():.1f}**")
